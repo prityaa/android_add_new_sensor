@@ -1,2 +1,1 @@
-# android_add_new_sensor
-study and add new sensor in android 
+https://processors.wiki.ti.com/index.php/Android_Sensor_PortingGuide#Accelerometer

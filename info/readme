@@ -1,0 +1,244 @@
+Accelerometer
+==================
+
+1 Android sensor sub system overview
+	Above diagram shows the android subsystem overview.
+
+Application Framework
+	Sensor Applications uses the Sensor application framework to get the
+	sensor data. It communicates with C++ layer through sensor Java native interface (JNI)
+
+Sensor Libraries
+	Sensor middle layer mainly consists of Sensor Manager, Sensor service
+	and Sensor hardware abstraction layer.
+
+Input Subsystem
+	This is a generic Linux framework for all input devices like keyboard,
+	mouse, touchscreen and defines a standard set of events.
+	It interfaces to user space through /sys/class/input interface.
+
+Evdev
+	Evdev provides a generic way for input device events to be accessible under /dev/input/eventX .
+
+LIS331DLH Accelerometer Driver
+	This driver communicates with LIS331DLH accelerometer chip via
+	GPIO and I2C bus. GPIO line is used for generating interrupts while
+	I2C bus for accessing and configuring accelerometer registers.
+
+2 . Driver porting
+	n AM37x Flashboard Accelerometer(LIS331DLH) is connected to I2C 1 bus.
+	Its relevant initialization and pin-muxing is done at <kernel>/arch/arm/mach-omap2/board-omap3evm.c file.
+
+Modify LIS331DLH data structure
+Modify the following structure to change the axes directions (negate_x, negate_y, negate_x) and axis mapping (axis_map_x, axis_map_y, axis_map_z). This can be used to calibrate the sensor.
+
+  struct lis331dlh_platform_data lis331dlh_omap3evm_data = {
+       .min_interval = 1,
+       .poll_interval = 200,
+       .g_range = LIS331DLH_G_8G,
+       .axis_map_x = 0,
+       .axis_map_y = 1,
+       .axis_map_z = 2,
+       .negate_x = 0,
+       .negate_y = 0,
+       .negate_z = 0,
+  };
+
+Add I2C board info structure
+On Flashboard accelerometer is connected to I2C 1. If your sensor is interfaced on different I2C bus then please do the following changes to your board file.
+
+  static struct i2c_board_info __initdata omap3evm_i2c_x_boardinfo[] = {
+     {
+             I2C_BOARD_INFO("lis331dlh", 0x18),
+             .platform_data = &lis331dlh_omap3evm_data,
+     },
+  };
+Where 0x18 is the lis331dlh chip address. Please change this address corresponding to your chip address.
+
+Register i2c bus
+Register I2C bus with the i2c sub-system.
+
+  static int __init omap3_evm_i2c_init(void)
+  {
+       .
+       .
+       omap_register_i2c_bus(x, 100, omap3evm_i2c_x_boardinfo, ARRAY_SIZE(omap3evm_i2c_x_boardinfo));
+       .
+       .
+       return 0;
+  }
+
+  Note: where x is i2c bus number.
+Interrupt line modification
+on Flash board accelerometer interrupt line is connected to GPIO 42.Please change the following if your accelerometer interrupt line is connected to different GPIO.
+
+Pin mux change in board configuration file
+Add following line to omap36x_board_mux structure to arch/arm/mach-omap2/board-omap3evm.c file.
+
+  static struct omap_board_mux omap36x_board_mux[] __initdata = {
+  {
+      .
+      .
+      //Ex: Pin mux for GPIO 42.
+      OMAP3_MUX(GPMC_A9, OMAP_MUX_MODE4 | OMAP_PIN_INPUT_PULLUP),
+  }
+
+  Note: Please change OMAP3_MUX arguments as per your GPIO No.
+LIS331DLH driver file modification
+LIS331DLH accelerometer driver is located at <kernel>/driver/misc/lis331dlh.c file. Change the following macro for your interrupt gpio number.
+
+  #define LIS331DLH_INT2_GPIO     GPIO_NO
+Test Accelerometer driver
+Enable Accelerometer sensor.
+
+  #cat 1 > /sys/bus/i2c/drivers/lis331dlh/1-0018/enable
+
+  Note: Please ckeck appropriate sysfs path as per your driver
+Use getevent command to see accelerometer events
+
+  #getevent
+     add device 2: /dev/input/event2
+     name:     "Acceleromter"
+     /dev/input/event2: 0001 014a 00000001
+     /dev/input/event2: 0003 0000 0000089e
+     /dev/input/event2: 0003 0001 000005fe
+Android hardware abstraction layer
+Sensor hardware abstraction layer (HAL) is located in <android source>/hardware/ti/omap3/libsensors directory.
+
+Adding new sensor support in android HAL Ex: Accelerometer
+Implement a sensor class
+Accelerometer sensor class in implemented in AccelSensor.h and AccelSensor.cpp file.
+
+  class AccelSensor : public SensorBase {
+       int mEnabled;
+       .
+       .
+       int setInitialState();
+
+   public:
+
+       AccelSensor();
+       virtual ~AccelSensor();
+       virtual int readEvents(sensors_event_t* data, int count);
+       virtual bool hasPendingEvents() const;
+       virtual int setDelay(int32_t handle, int64_t ns);
+       virtual int enable(int32_t handle, int enabled);
+   };
+Add new sensor support
+Add new sensor support in sensors.cpp file.
+
+Add new sensor to sSensorList Structure
+  /* The SENSORS Module */
+  static const struct sensor_t sSensorList[] = {
+  .
+  .
+  { "STMicro 3 axis accelerometer",
+    "STMicro",
+    1, SENSORS_ACCELERATION_HANDLE,
+    SENSOR_TYPE_ACCELEROMETER, RANGE_A, RESOLUTION_A, 0.23f, 20000, { } },
+  };
+Create object of new sensor
+  sensors_poll_context_t::sensors_poll_context_t()
+  {
+       .
+       .
+       mSensors[accel] = new AccelSensor();
+       mPollFds[accel].fd = mSensors[accel]->getFd();
+       mPollFds[accel].events = POLLIN;
+       mPollFds[accel].revents = 0;
+       .
+       .
+       int wakeFds[2];
+       int result = pipe(wakeFds);
+       LOGE_IF(result<0, "error creating wake pipe (%s)", strerror(errno));
+       fcntl(wakeFds[0], F_SETFL, O_NONBLOCK);
+       fcntl(wakeFds[1], F_SETFL, O_NONBLOCK);
+       mWritePipeFd = wakeFds[1];
+
+       mPollFds[wake].fd = wakeFds[0];
+       mPollFds[wake].events = POLLIN;
+       mPollFds[wake].revents = 0;
+
+ }
+
+Update sensors_poll_context_t structure and add new sensor case to handleToDriver function.
+  struct sensors_poll_context_t {
+      struct sensors_poll_device_t device; // must be first
+      .
+      .
+  private:
+      enum {
+           accel           = 0,
+           light           = 1,
+           proximity       = 2,
+           press_temp      = 3,
+           numSensorDrivers,
+           numFds,
+      };
+
+
+   int handleToDriver(int handle) const {
+           switch (handle) {
+                    case ID_A:
+                           return accel;
+                       .
+                       .
+       }
+           return -EINVAL;
+   }
+Calibration methods
+Changing axes directions and swapping axes
+This can be achieved by modifying the driver or android hardware abstraction layer.
+
+Driver Modification
+Accelerometer platform data structure is as follows.
+
+  struct lis331dlh_platform_data lis331dlh_omap3evm_data = {
+      .min_interval = 1,
+      .poll_interval = 200,
+      .g_range = LIS331DLH_G_8G,
+      .axis_map_x = 0,
+      .axis_map_y = 1,
+      .axis_map_z = 2,
+      .negate_x = 0,
+      .negate_y = 0,
+      .negate_z = 0,
+  };
+axis_map_x, axis_map_y, axis_map_z can be used to swap x, y and z axes. If axis_map_x is 0 then it will be mapped to x-axis in android, if it is 1 then it will be mapped to y axis in Android and so on.
+
+To change the axes direction we can set negate_x, negate_y and negate_z value to 1. If negate_x, negate_y and negate_z values are set to 1 then driver will negate accelerometer axes readings before passing to user space (Android).
+
+Android HAL modification
+This type of calibration can be achieved in Android HAL as well by modifying readEvents() function in <android source>/hardware/ti/omap3/libsensors/AccelSensor.cpp file.
+
+  int AccelSensor::readEvents(sensors_event_t* data, int count)
+  {
+      .
+      .
+      while (count && mInputReader.readEvent(&event)) {
+          int type = event->type;
+          if (type == EV_ABS) {
+              float value = event->value;
+              if (event->code == EVENT_TYPE_ACCEL_Y) {
+                  mPendingEvent.data[1] =  -(value * CONVERT_A_Y);
+              } else if (event->code == EVENT_TYPE_ACCEL_X) {
+                  mPendingEvent.data[0] = -(value * CONVERT_A_X);
+              } else if (event->code == EVENT_TYPE_ACCEL_Z) {
+                  mPendingEvent.data[2] = -(value * CONVERT_A_Z);
+              }
+     .
+     .
+     .
+  }
+data[index]: index can be changed to swap axes and value can be negated to change the axis direction.
+
+Accelerometer zero calibration
+When the device rests on a level surface, X and Y should be around zero. The accelerometer can be zero calibrated i.e. adjusted so that the acceleration reads zero at the current acceleration of the phone.
+
+For zero calibration, store the negative X, Y and Z values in three variables cx, cy and cz.To get zero calibrated X, Y and Z values simply add cx, cy and cz to the current sensor readings.
+
+Following links show the examples for achieving zero calibration.
+
+http://www.intuitor.com/student/Android%20Phone%20Site/StephanAccelerometerAndroid.php
+
+http://stuffthathappens.com/blog/2009/03/15/android-accelerometer/
